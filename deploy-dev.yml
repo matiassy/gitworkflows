@@ -1,0 +1,54 @@
+name: deploy dev
+
+on:
+  push:
+    branches:
+      - dev
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps: 
+    - name: Instalar OpenVPN
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y openvpn
+
+    - name: Configurar y conectar OVPN
+      run: |
+        echo "${{ secrets.OVPN_CONFIG }}" > vpn-config.ovpn
+        sudo openvpn --config vpn-config.ovpn --daemon
+        sleep 10  # Espera para que la VPN se conecte
+        sudo curl ifconfig.me  # Verificar la IP pública para confirmar la conexión
+
+    - name: Chequeo del código
+      uses: actions/checkout@v3
+      with:
+        ref: dev
+
+    - name: Set up SSH
+      uses: webfactory/ssh-agent@v0.8.0
+      with:
+          ssh-private-key: ${{ secrets.INSTANCE_SSH_KEY }}   
+
+    - name: Agregar clave del host SSH
+      run: |
+        mkdir -p ~/.ssh
+        ssh-keyscan -p "PORT_INSTANCIA" "IP_INSTANCIA" >> ~/.ssh/known_hosts
+          
+    - name: Deploy a instancia de Developer
+      run: |
+        ssh -p PORT_INSTANCIA ${{ secrets.INSTANCE_USERNAME }}@IP_INSTANCIA << 'EOF'
+        export GIT_SSH_COMMAND="ssh -i ~/.ssh/actions"
+        cd "DIR_DEPLOY"
+        git checkout dev
+        git remote set-url origin git@github.com:USUARIO_GITHUB/PROYECT_GITHUB.git
+        git fetch origin dev
+        git reset --hard origin/dev
+        EOF
+        
+    - name: Limpiar configuraciones
+      run: |
+        rm -f vpn-config.ovpn
+        rm -f ~/.ssh/id_rsa
