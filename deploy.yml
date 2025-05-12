@@ -1,0 +1,60 @@
+name: Deploy prod y stage
+
+on:
+  push:
+    branches:
+      - main
+      - stage
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Instalar OpenVPN
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y openvpn
+
+    - name: Configurar y conectar OVPN
+      run: |
+        echo "${{ secrets.OVPN_CONFIG }}" > vpn-config.ovpn
+        sudo openvpn --config vpn-config.ovpn --daemon
+        sleep 10
+        sudo curl ifconfig.me
+
+    - name: Checkout del código
+      uses: actions/checkout@v3
+
+    - name: Set up SSH
+      uses: webfactory/ssh-agent@v0.8.0
+      with:
+        ssh-private-key: ${{ secrets.INSTANCE_SSH_KEY }}
+
+    - name: Agregar clave del host SSH
+      run: |
+        mkdir -p ~/.ssh
+        ssh-keyscan -p "${{ secrets.PORT_INSTANCIA_PROD }}" "${{ secrets.IP_INSTANCIA_PROD }}" >> ~/.ssh/known_hosts
+
+    - name: Deploy a Producción
+      if: github.ref == 'refs/heads/main'
+      run: |
+        ssh -p ${{ secrets.PORT_INSTANCIA_PROD }} ${{ secrets.INSTANCE_USERNAME_PROD }}@${{ secrets.IP_INSTANCIA_PROD }} << 'EOF'
+        cd /ruta/prod
+        git pull origin main
+        docker-compose restart
+        EOF
+
+    - name: Deploy a Staging
+      if: github.ref == 'refs/heads/stage'
+      run: |
+        ssh -p ${{ secrets.PORT_INSTANCIA_STG }} ${{ secrets.INSTANCE_USERNAME_STG }}@${{ secrets.IP_INSTANCIA_STG }} << 'EOF'
+        cd /ruta/stage
+        git pull origin stage
+        docker-compose restart
+        EOF
+
+    - name: Limpiar configuraciones
+      run: |
+        rm -f vpn-config.ovpn
+        rm -f ~/.ssh/id_rsa
