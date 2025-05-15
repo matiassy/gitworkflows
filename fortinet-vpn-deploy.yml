@@ -1,0 +1,92 @@
+name: Deploy prod y stage
+
+on:
+  push:
+    branches:
+      - main
+      - stage
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Instalar openfortivpn
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y openfortivpn
+
+    - name: Conectar VPN Fortigate con openfortivpn
+      env:
+        FORTIGATE_IP: ${{ secrets.FORTIGATE_IP }}
+        FORTIGATE_PORT: ${{ secrets.FORTIGATE_PORT }}  # típicamente 443
+        FORTIGATE_USER: ${{ secrets.FORTIGATE_USER }}
+        FORTIGATE_PASS: ${{ secrets.FORTIGATE_PASS }}
+      run: |
+        echo $FORTIGATE_PASS | sudo openfortivpn $FORTIGATE_IP:$FORTIGATE_PORT -u $FORTIGATE_USER --stdin-password --daemon
+        sleep 15
+        sudo curl ifconfig.me
+
+    - name: Checkout del código
+      uses: actions/checkout@v3
+
+    - name: Set up SSH Agent en GitHub Actions (para scp)
+      uses: webfactory/ssh-agent@v0.8.0
+      with:
+        ssh-private-key: ${{ secrets.INSTANCE_SSH_KEY }}
+
+    - name: Agregar clave del host SSH para producción
+      if: github.ref == 'refs/heads/main'
+      run: |
+        mkdir -p ~/.ssh
+        ssh-keyscan -p "${{ secrets.PORT_INSTANCIA_PROD }}" "${{ secrets.IP_INSTANCIA_PROD }}" >> ~/.ssh/known_hosts
+
+    - name: Agregar clave del host SSH para staging
+      if: github.ref == 'refs/heads/stage'
+      run: |
+        mkdir -p ~/.ssh
+        ssh-keyscan -p "${{ secrets.PORT_INSTANCIA_STG }}" "${{ secrets.IP_INSTANCIA_STG }}" >> ~/.ssh/known_hosts
+
+    - name: Copiar clave SSH a la instancia (producción)
+      if: github.ref == 'refs/heads/main'
+      run: |
+        echo "${{ secrets.INSTANCE_SSH_KEY }}" > github-actions.key
+        chmod 600 github-actions.key
+        scp -i github-actions.key -P ${{ secrets.PORT_INSTANCIA_PROD }} github-actions.key ${{ secrets.INSTANCE_USERNAME_PROD }}@${{ secrets.IP_INSTANCIA_PROD }}:~/.ssh/github-actions
+
+    - name: Copiar clave SSH a la instancia (staging)
+      if: github.ref == 'refs/heads/stage'
+      run: |
+        echo "${{ secrets.INSTANCE_SSH_KEY }}" > github-actions.key
+        chmod 600 github-actions.key
+        scp -i github-actions.key -P ${{ secrets.PORT_INSTANCIA_STG }} github-actions.key ${{ secrets.INSTANCE_USERNAME_STG }}@${{ secrets.IP_INSTANCIA_STG }}:~/.ssh/github-actions
+
+    - name: Deploy a Producción
+      if: github.ref == 'refs/heads/main'
+      run: |
+        ssh -T -p ${{ secrets.PORT_INSTANCIA_PROD }} ${{ secrets.INSTANCE_USERNAME_PROD }}@${{ secrets.IP_INSTANCIA_PROD }} << 'EOF'
+        export GIT_SSH_COMMAND="ssh -i ~/.ssh/github-actions -o StrictHostKeyChecking=no"
+        cd /u/docker/docker-airflow
+        git config --global --add safe.directory /u/docker/docker-airflow
+        git remote set-url origin git@github.com:bcsf-com-ar/docker-airflow.git
+        git fetch origin main
+        git reset --hard origin/main
+        docker-compose up -d
+        EOF
+
+    - name: Deploy a Staging
+      if: github.ref == 'refs/heads/stage'
+      run: |
+        ssh -T -p ${{ secrets.PORT_INSTANCIA_STG }} ${{ secrets.INSTANCE_USERNAME_STG }}@${{ secrets.IP_INSTANCIA_STG }} << 'EOF'
+        export GIT_SSH_COMMAND="ssh -i ~/.ssh/github-actions -o StrictHostKeyChecking=no"
+        cd /u/docker/docker-airflow
+        git config --global --add safe.directory /u/docker/docker-airflow
+        git remote set-url origin git@github.com:bcsf-com-ar/docker-airflow.git
+        git fetch origin stage
+        git reset --hard origin/stage
+        docker-compose up -d
+        EOF
+
+    - name: Limpiar configuraciones
+      run: |
+        rm -f github-actions.key
